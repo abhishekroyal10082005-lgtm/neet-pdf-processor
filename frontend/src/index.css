@@ -1,0 +1,399 @@
+import { useEffect, useMemo, useState } from 'react';
+
+const API_BASE = 'http://localhost:8000/api';
+
+type JobStatus = 'queued' | 'processing' | 'completed' | 'failed' | 'cancelled';
+
+type JobSettings = {
+  deblur: boolean;
+  denoise: boolean;
+  contrast: boolean;
+  sharpen: boolean;
+  deskew: boolean;
+  background_normalization: boolean;
+  quality: number;
+  output_dpi: number;
+  allow_watermark_cleanup: boolean;
+  preview_only: boolean;
+};
+
+type JobRow = {
+  id: string;
+  name: string;
+  file_id: string;
+  file_name: string;
+  status: JobStatus;
+  total_pages: number;
+  completed_pages: number;
+  failed_pages: number;
+  progress_percent: number;
+  created_at: string;
+  updated_at: string;
+  output_file: string | null;
+  error_message: string | null;
+  settings: JobSettings;
+  estimated_remaining_minutes: number | null;
+};
+
+type UploadItem = {
+  id: string;
+  name: string;
+  type: string;
+  sizeBytes: number;
+  createdAt: string;
+};
+
+const defaultSettings: JobSettings = {
+  deblur: true,
+  denoise: true,
+  contrast: true,
+  sharpen: true,
+  deskew: true,
+  background_normalization: true,
+  quality: 2,
+  output_dpi: 300,
+  allow_watermark_cleanup: false,
+  preview_only: false,
+};
+
+async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
+  const response = await fetch(url, {
+    headers: { 'Content-Type': 'application/json', ...(options?.headers || {}) },
+    ...options,
+  });
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}));
+    throw new Error(data.detail || 'Request failed');
+  }
+  return response.json() as Promise<T>;
+}
+
+function formatDate(value: string) {
+  return new Date(value).toLocaleString();
+}
+
+function App() {
+  const [jobs, setJobs] = useState<JobRow[]>([]);
+  const [files, setFiles] = useState<UploadItem[]>([]);
+  const [selectedFileId, setSelectedFileId] = useState<string>('');
+  const [projectName, setProjectName] = useState('NEET 2024 Reconstruction');
+  const [settings, setSettings] = useState<JobSettings>(defaultSettings);
+  const [uploading, setUploading] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState('');
+
+  const loadJobs = async () => {
+    try {
+      const data = await fetchJson<JobRow[]>(`${API_BASE}/jobs`);
+      setJobs(data);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unable to load jobs');
+    }
+  };
+
+  const loadFiles = async () => {
+    try {
+      const data = await fetchJson<UploadItem[]>(`${API_BASE}/files`);
+      setFiles(data);
+      if (data[0] && !selectedFileId) setSelectedFileId(data[0].id);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unable to load files');
+    }
+  };
+
+  useEffect(() => {
+    loadJobs();
+    loadFiles();
+    const timer = setInterval(() => {
+      loadJobs();
+    }, 3000);
+    return () => clearInterval(timer);
+  }, []);
+
+  const handleUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    setUploading(true);
+    setError('');
+    try {
+      const form = new FormData();
+      form.append('file', file);
+      const response = await fetch(`${API_BASE}/upload`, { method: 'POST', body: form });
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.detail || 'Upload failed');
+      }
+      const data = await response.json();
+      setSelectedFileId(data.id);
+      await loadFiles();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Upload failed');
+    } finally {
+      setUploading(false);
+      event.target.value = '';
+    }
+  };
+
+  const handleCreateJob = async () => {
+    if (!selectedFileId) {
+      setError('Choose a file first.');
+      return;
+    }
+    setSubmitting(true);
+    setError('');
+    try {
+      await fetchJson(`${API_BASE}/jobs`, {
+        method: 'POST',
+        body: JSON.stringify({
+          file_id: selectedFileId,
+          name: projectName || 'Untitled project',
+          settings,
+        }),
+      });
+      await loadJobs();
+      setProjectName('');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to start job');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleDownload = (job: JobRow) => {
+    if (!job.output_file) return;
+    window.open(`${API_BASE}/jobs/${job.id}/download`, '_blank');
+  };
+
+  const handleCancel = async (jobId: string) => {
+    try {
+      await fetchJson(`${API_BASE}/jobs/${jobId}`, { method: 'DELETE' });
+      await loadJobs();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not cancel job');
+    }
+  };
+
+  const highlighted = useMemo(() => {
+    const active = jobs.filter((job) => job.status === 'processing' || job.status === 'queued');
+    return active.length ? active[0] : jobs[0];
+  }, [jobs]);
+
+  return (
+    <div className="app-shell">
+      <aside className="sidebar">
+        <div className="brand-block">
+          <div className="brand-mark">C</div>
+          <div>
+            <div className="brand-name">CleanScan AI</div>
+            <small>Document restoration</small>
+          </div>
+        </div>
+        <nav className="nav">
+          <button className="nav-item active">Dashboard</button>
+          <button className="nav-item">New Project</button>
+          <button className="nav-item">Processing History</button>
+          <button className="nav-item">My Files</button>
+          <button className="nav-item">Settings</button>
+        </nav>
+      </aside>
+
+      <main className="main-panel">
+        <header className="topbar">
+          <div>
+            <p className="eyebrow">AI restoration workspace</p>
+            <h1>Dashboard</h1>
+          </div>
+          <div className="top-actions">
+            <button className="secondary-btn">Export Report</button>
+            <button className="primary-btn">New Project</button>
+          </div>
+        </header>
+
+        {error && <div className="error-banner">{error}</div>}
+
+        <section className="hero-grid">
+          <div className="card">
+            <div className="card-header">
+              <span>Processing overview</span>
+              <span className="status-pill">Live</span>
+            </div>
+            <div className="metric-row">
+              <div>
+                <div className="label">Total pages</div>
+                <div className="value">{highlighted?.total_pages || 0}</div>
+              </div>
+              <div>
+                <div className="label">Completed</div>
+                <div className="value">{highlighted?.completed_pages || 0}</div>
+              </div>
+              <div>
+                <div className="label">Processing</div>
+                <div className="value">{highlighted?.status === 'processing' ? 1 : 0}</div>
+              </div>
+            </div>
+            <div className="progress-block">
+              <div className="progress-bar">
+                <span style={{ width: `${highlighted?.progress_percent || 0}%` }} />
+              </div>
+              <div className="progress-meta">
+                <strong>{highlighted?.progress_percent || 0}%</strong>
+                <span>{highlighted?.estimated_remaining_minutes ?? 0} min left</span>
+              </div>
+            </div>
+          </div>
+
+          <div className="card">
+            <div className="card-header">
+              <span>Current project</span>
+              <span className="status-pill neutral">Ready</span>
+            </div>
+            <h3>{projectName || 'New restoration batch'}</h3>
+            <p className="muted">Authorized cleanup workflow enabled for user-owned content.</p>
+            <ul className="feature-list">
+              <li>Margin cleanup</li>
+              <li>OCR readability analysis</li>
+              <li>PDF reconstruction</li>
+            </ul>
+          </div>
+        </section>
+
+        <section className="content-grid">
+          <div className="card form-card">
+            <div className="card-header">
+              <span>New Project</span>
+            </div>
+            <label className="field-label">Project title</label>
+            <input
+              value={projectName}
+              onChange={(e) => setProjectName(e.target.value)}
+              placeholder="NEET 2024 cleanup run"
+            />
+
+            <label className="field-label">Upload file</label>
+            <input type="file" accept=".pdf,.png,.jpg,.jpeg" onChange={handleUpload} />
+
+            <div className="select-wrap">
+              <label className="field-label">Source file</label>
+              <select value={selectedFileId} onChange={(e) => setSelectedFileId(e.target.value)}>
+                {files.length === 0 && <option value="">No uploaded files</option>}
+                {files.map((file) => (
+                  <option key={file.id} value={file.id}>{file.name}</option>
+                ))}
+              </select>
+            </div>
+
+            <div className="checkbox-grid">
+              {Object.entries(settings).map(([key, value]) => {
+                if (typeof value !== 'boolean') return null;
+                return (
+                  <label key={key} className="check-item">
+                    <input
+                      type="checkbox"
+                      checked={value}
+                      onChange={() =>
+                        setSettings((prev) => ({
+                          ...prev,
+                          [key]: !value,
+                        }))
+                      }
+                    />
+                    <span>{key.replace(/_/g, ' ')}</span>
+                  </label>
+                );
+              })}
+            </div>
+
+            <div className="button-row">
+              <button className="primary-btn" onClick={handleCreateJob} disabled={submitting || uploading || !selectedFileId}>
+                {submitting ? 'Starting...' : 'Start Restoration'}
+              </button>
+            </div>
+          </div>
+
+          <div className="card history-card">
+            <div className="card-header">
+              <span>Processing History</span>
+            </div>
+            <div className="job-list">
+              {jobs.length === 0 && <p className="muted">No jobs yet.</p>}
+              {jobs.map((job) => (
+                <div className="job-item" key={job.id}>
+                  <div>
+                    <strong>{job.name}</strong>
+                    <div className="muted small">{job.file_name}</div>
+                    <div className="muted small">{formatDate(job.updated_at)}</div>
+                  </div>
+                  <div className="job-meta">
+                    <span className={`status-pill ${job.status}`}>{job.status}</span>
+                    <div className="small-value">{job.progress_percent}%</div>
+                  </div>
+                  <div className="job-actions">
+                    {job.status === 'completed' && job.output_file && (
+                      <button className="secondary-btn" onClick={() => handleDownload(job)}>
+                        Download
+                      </button>
+                    )}
+                    {job.status !== 'completed' && job.status !== 'cancelled' && job.status !== 'failed' && (
+                      <button className="secondary-btn" onClick={() => handleCancel(job.id)}>
+                        Cancel
+                      </button>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </section>
+
+        <section className="bottom-grid">
+          <div className="card">
+            <div className="card-header">
+              <span>My Files</span>
+            </div>
+            <div className="file-list">
+              {files.map((file) => (
+                <div className="file-item" key={file.id}>
+                  <div>
+                    <strong>{file.name}</strong>
+                    <div className="muted small">{file.type.toUpperCase()} · {(file.sizeBytes / 1024 / 1024).toFixed(2)} MB</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="card">
+            <div className="card-header">
+              <span>Processing settings</span>
+            </div>
+            <div className="settings-grid">
+              <div>
+                <label>Quality level</label>
+                <input
+                  type="range"
+                  min={1}
+                  max={4}
+                  value={settings.quality}
+                  onChange={(e) => setSettings({ ...settings, quality: Number(e.target.value) })}
+                />
+              </div>
+              <div>
+                <label>Output DPI</label>
+                <input
+                  type="range"
+                  min={150}
+                  max={600}
+                  step={50}
+                  value={settings.output_dpi}
+                  onChange={(e) => setSettings({ ...settings, output_dpi: Number(e.target.value) })}
+                />
+              </div>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+  );
+}
+
+export default App;
